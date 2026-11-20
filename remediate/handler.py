@@ -139,6 +139,17 @@ def _check_service(ecs, elbv2, cluster, svc, now, cfg, out) -> None:
         unhealthy += sum(1 for h in health if h["TargetHealth"]["State"] == "unhealthy")
     if unhealthy < cfg.unhealthy_threshold:
         return
+    # Tasks from an earlier change are still starting: adding more won't help yet.
+    # Uses live task counts only, not deployment timestamps.
+    running, pending, desired = svc["runningCount"], svc["pendingCount"], svc["desiredCount"]
+    if pending > 0 or running < desired:
+        out.skipped.append(
+            {
+                "service": name,
+                "reason": f"tasks still starting: running {running}/{desired}, pending {pending}",
+            }
+        )
+        return
     decision = guard(svc, now, cfg)
     if not decision.act:
         out.skipped.append({"service": name, "reason": decision.reason})
