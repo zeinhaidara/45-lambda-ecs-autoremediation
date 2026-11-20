@@ -1,0 +1,11 @@
+memory/
+.env
+.vscode/
+.idea/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+package/
+*.zip
