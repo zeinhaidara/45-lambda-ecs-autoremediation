@@ -1,0 +1,24 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadServicesAndTargetHealth",
+      "Effect": "Allow",
+      "Action": ["ecs:ListServices", "ecs:DescribeServices", "elasticloadbalancing:DescribeTargetHealth"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "UpdateOnlyOptedInServices",
+      "Effect": "Allow",
+      "Action": "ecs:UpdateService",
+      "Resource": "arn:aws:ecs:*:123456789012:service/*/*",
+      "Condition": {"StringEquals": {"aws:ResourceTag/auto-remediate": "true"}}
+    },
+    {
+      "Sid": "OwnLogs",
+      "Effect": "Allow",
+      "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+      "Resource": "arn:aws:logs:*:123456789012:log-group:/aws/lambda/ecs-auto-remediation:*"
+    }
+  ]
+}
