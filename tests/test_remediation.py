@@ -25,6 +25,8 @@ def service(
     in_progress=False,
     deployments=1,
     tgs=(TG,),
+    running=None,
+    pending=0,
 ):
     primary = {
         "status": "PRIMARY",
@@ -38,6 +40,8 @@ def service(
         "serviceName": name,
         "serviceArn": f"arn:aws:ecs:eu-west-2:123456789012:service/shop/{name}",
         "desiredCount": desired,
+        "runningCount": desired if running is None else running,
+        "pendingCount": pending,
         "deployments": deps,
         "loadBalancers": [
             {"targetGroupArn": t, "containerName": "app", "containerPort": 8080} for t in tgs
@@ -259,3 +263,38 @@ def test_iam_policy_limits_updates_to_opted_in_services():
         for a in ([s["Action"]] if isinstance(s["Action"], str) else s["Action"])
     ]
     assert not any("*" in a for a in actions)
+
+
+# --- tasks still starting --------------------------------------------------------------
+
+
+def test_no_scale_out_while_tasks_are_pending(env):
+    # Last deployment change was long ago, so only the task counts can stop this.
+    ecs = FakeECS([service(desired=2, running=2, pending=1, deployed_minutes_ago=600)])
+    out = run(event("scheduled-sweep"), ecs, FakeELB({TG: ["unhealthy"]}))
+    assert ecs.updates == []
+    assert out["skipped"][0]["reason"] == "tasks still starting: running 2/2, pending 1"
+
+
+def test_no_scale_out_while_running_is_below_desired(env):
+    ecs = FakeECS([service(desired=3, running=2, pending=0, deployed_minutes_ago=600)])
+    out = run(event("scheduled-sweep"), ecs, FakeELB({TG: ["unhealthy"]}))
+    assert ecs.updates == []
+    assert out["skipped"][0]["reason"] == "tasks still starting: running 2/3, pending 0"
+
+
+def test_scale_out_resumes_once_tasks_have_settled(env):
+    ecs = FakeECS([service(desired=3, running=3, pending=0, deployed_minutes_ago=600)])
+    run(event("scheduled-sweep"), ecs, FakeELB({TG: ["unhealthy"]}))
+    assert ecs.updates == [{"cluster": "shop", "service": "checkout", "desiredCount": 4}]
+
+
+def test_iam_condition_key_is_one_update_service_supports():
+    # Per the AWS service authorization reference for ECS, UpdateService on the
+    # service resource supports aws:ResourceTag/${TagKey} and ecs:ResourceTag/${TagKey}.
+    supported = {"aws:ResourceTag/", "ecs:ResourceTag/"}
+    policy = json.loads((ROOT / "iam" / "policy.json").read_text())
+    [update] = [s for s in policy["Statement"] if s["Action"] == "ecs:UpdateService"]
+    for key in update["Condition"]["StringEquals"]:
+        assert any(key.startswith(prefix) for prefix in supported), key
+    assert update["Resource"].endswith(":service/*/*")  # long ARN format, required for tags
