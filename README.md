@@ -10,11 +10,11 @@ fixes:
 Only services tagged `auto-remediate=true` are ever touched, and the
 function is **dry-run by default**.
 
-> **Status:** ECS only. **EKS is not implemented.** 26 pytest tests drive
+> **Status:** ECS only. **EKS is not implemented.** 30 pytest tests drive
 > the handler with fake ECS and ELBv2 clients and a fixed clock. They cover
 > the opt-in tag, crash vs normal stop codes, deployment-in-progress,
-> cooldown, the hard maximum, pagination and batching, dry run, bad config,
-> and the IAM policy's tag condition. Nothing has been deployed, and the
+> cooldown, tasks still starting, the hard maximum, pagination and batching,
+> dry run, bad config, and the IAM policy's tag condition. Nothing has been deployed, and the
 > function has never called real ECS or ELB APIs.
 
 ## Problem
@@ -32,8 +32,10 @@ flowchart TD
     C -- yes --> G
     E2[EventBridge schedule<br/>sweep] --> L[list services, paged<br/>describe in batches of 10]
     L --> H{unhealthy targets in<br/>service's target groups<br/>>= threshold?}
+    H -- yes --> T{pendingCount > 0 or<br/>runningCount < desiredCount?}
+    T -- yes --> SK4[skip: tasks still starting]
     H -- no --> SK2[skip]
-    H -- yes --> G
+    T -- no --> G
     G{guards:<br/>tag auto-remediate=true<br/>no deployment in progress<br/>cooldown since last deployment} -- fail --> SK3[skip, reason logged]
     G -- pass --> A1[force new deployment]
     G -- pass --> A2[desiredCount + 1<br/>unless at MAX_DESIRED_COUNT]
@@ -50,6 +52,7 @@ flowchart TD
 | Opt-in | service tag `auto-remediate=true`; untagged services are never touched. The IAM policy enforces the same tag on `ecs:UpdateService`. |
 | No fighting deployments | skip when the service has more than one deployment or its primary rollout is `IN_PROGRESS` |
 | Cooldown | skip when the primary deployment's `updatedAt` is newer than `COOLDOWN_MINUTES` (default 15). A forced deployment or a desired-count change updates it, so the next action waits. No state table is needed. |
+| Tasks still starting | scale-out is skipped while the service has `pendingCount > 0` or `runningCount < desiredCount`. This reads live task counts only, so it works even if the deployment timestamp didn't move. |
 | Hard maximum | never scale past `MAX_DESIRED_COUNT` (default 10), and only one task per action |
 | Dry run | `DRY_RUN` unset or `true` logs the action without calling `UpdateService` |
 
@@ -85,8 +88,9 @@ Deploying is not included. To deploy by hand:
 ## Limits
 
 - ECS only; EKS is not implemented.
-- Scale-out only adds capacity. Nothing scales back in; leave that to
-  Application Auto Scaling or a human.
+- **Scale-out is never reversed by this function.** It only ever raises
+  `desiredCount`; it never lowers it, even after the targets are healthy
+  again. Scaling back in is left to Application Auto Scaling or a human.
 - Scaling out doesn't fix a bad release. If every task is unhealthy, this
   adds tasks up to the cap; deployment circuit breakers or a rollback are the
   real fix.
@@ -99,6 +103,15 @@ Deploying is not included. To deploy by hand:
 
 - Opt-in by tag in code and in IAM: the role can only update services
   tagged `auto-remediate=true`.
+- **Checked against AWS docs:** the service authorization reference for
+  Amazon ECS ("Actions, resources, and condition keys for Amazon Elastic
+  Container Service", `docs.aws.amazon.com/service-authorization/latest/reference/list_ecs.html`)
+  lists `aws:ResourceTag/${TagKey}` and `ecs:ResourceTag/${TagKey}` as
+  supported condition keys for `ecs:UpdateService` on the `service`
+  resource, so the policy's `aws:ResourceTag/auto-remediate` condition is a
+  real guard and was kept. Tag-based authorization needs services with the
+  long ARN format (`service/<cluster>/<name>`), which the policy's resource
+  pattern assumes.
 - Read actions are limited to `ListServices`, `DescribeServices` and
   `DescribeTargetHealth`; no wildcard actions.
 - No credentials in code; the Lambda role supplies them.
