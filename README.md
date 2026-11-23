@@ -23,6 +23,11 @@ function is **dry-run by default**.
 > tasks or unhealthy target groups and triggers a controlled restart or
 > scale-out.
 
+Why it matters: crashed tasks and unhealthy targets often need the same
+first fix, applied by whoever is on call, at any hour. Doing that fix
+automatically, only for opted-in services and within hard limits, shortens
+the outage without letting automation scale without bound.
+
 ## Flow
 
 ```mermaid
